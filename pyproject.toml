@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maogame"
+version = "0.1.0"
+description = "Simple educational mini-games for early primary school children."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "pygame>=2.6,<3",
+]
+
+[project.scripts]
+maogame = "maogame.app:main"
