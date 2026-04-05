@@ -10,19 +10,27 @@ from maogame.core.scene import Scene, SceneTransition
 class LauncherScene(Scene):
     def __init__(self) -> None:
         self.selected_index = 0
+        self.scroll_offset = 0.0
 
     def handle_event(
         self, event: pygame.event.Event, runtime: Runtime
     ) -> SceneTransition | None:
+        if event.type == pygame.MOUSEWHEEL:
+            self.scroll_offset -= event.y * 36
+            self._clamp_scroll(runtime)
+            return None
+
         if event.type != pygame.KEYDOWN:
             return None
         if is_back_key(event):
             return SceneTransition(quit_requested=True)
         if event.key in (pygame.K_UP, pygame.K_LEFT):
             self.selected_index = move_selection(self.selected_index, -1, len(runtime.registry))
+            self._ensure_selected_visible(runtime)
             return None
         if event.key in (pygame.K_DOWN, pygame.K_RIGHT):
             self.selected_index = move_selection(self.selected_index, 1, len(runtime.registry))
+            self._ensure_selected_visible(runtime)
             return None
         if is_confirm_key(event):
             game = runtime.registry[self.selected_index]
@@ -53,17 +61,24 @@ class LauncherScene(Scene):
         card_height = 92
         card_gap = 20
         top = 160
+        bottom = height - 24
+        viewport_height = bottom - top
         total_height = len(runtime.registry) * card_height + max(len(runtime.registry) - 1, 0) * card_gap
-        if top + total_height > height - 24:
-            card_height = 80
-            card_gap = 14
-            total_height = len(runtime.registry) * card_height + max(len(runtime.registry) - 1, 0) * card_gap
+        max_scroll = max(0.0, float(total_height - viewport_height))
+        self._clamp_scroll(runtime)
 
         left = 96
         card_width = width - 192
+        clip_rect = pygame.Rect(left - 8, top - 8, card_width + 16, viewport_height + 16)
+
+        previous_clip = surface.get_clip()
+        surface.set_clip(clip_rect)
 
         for index, game in enumerate(runtime.registry):
-            rect = pygame.Rect(left, top + index * (card_height + card_gap), card_width, card_height)
+            y = top + index * (card_height + card_gap) - int(self.scroll_offset)
+            rect = pygame.Rect(left, y, card_width, card_height)
+            if rect.bottom < top or rect.top > bottom:
+                continue
             fill = palette.card_selected if index == self.selected_index else palette.card
             pygame.draw.rect(surface, fill, rect, border_radius=22)
             pygame.draw.rect(surface, palette.card_border, rect, width=2, border_radius=22)
@@ -77,3 +92,42 @@ class LauncherScene(Scene):
             age_surface = card_text_font.render(game.age_band, True, palette.accent)
             age_rect = age_surface.get_rect(topright=(rect.right - 24, rect.top + 18))
             surface.blit(age_surface, age_rect)
+
+        surface.set_clip(previous_clip)
+
+        if max_scroll > 0:
+            track_rect = pygame.Rect(width - 34, top, 10, viewport_height)
+            pygame.draw.rect(surface, palette.accent_soft, track_rect, border_radius=5)
+            thumb_height = max(40, int((viewport_height / total_height) * viewport_height))
+            thumb_y = top + int((self.scroll_offset / max_scroll) * (viewport_height - thumb_height))
+            thumb_rect = pygame.Rect(track_rect.left, thumb_y, track_rect.width, thumb_height)
+            pygame.draw.rect(surface, palette.accent, thumb_rect, border_radius=5)
+
+    def _content_height(self, total_games: int) -> int:
+        if total_games <= 0:
+            return 0
+        return total_games * 92 + (total_games - 1) * 20
+
+    def _max_scroll(self, runtime: Runtime) -> float:
+        top = 160
+        bottom = runtime.config.window_height - 24
+        viewport_height = bottom - top
+        return max(0.0, float(self._content_height(len(runtime.registry)) - viewport_height))
+
+    def _clamp_scroll(self, runtime: Runtime) -> None:
+        self.scroll_offset = max(0.0, min(self.scroll_offset, self._max_scroll(runtime)))
+
+    def _ensure_selected_visible(self, runtime: Runtime) -> None:
+        top = 160
+        bottom = runtime.config.window_height - 24
+        viewport_height = bottom - top
+
+        selected_top = self.selected_index * (92 + 20)
+        selected_bottom = selected_top + 92
+
+        if selected_top < self.scroll_offset:
+            self.scroll_offset = float(selected_top)
+        elif selected_bottom > self.scroll_offset + viewport_height:
+            self.scroll_offset = float(selected_bottom - viewport_height)
+
+        self._clamp_scroll(runtime)
