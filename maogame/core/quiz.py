@@ -6,8 +6,12 @@ from typing import Any, Sequence
 import pygame
 
 from .input import digit_choice, is_back_key, is_confirm_key, move_selection
+from .assets import resolve_font_name
 from .runtime import Runtime
 from .scene import Scene, SceneTransition
+
+
+_QUIZ_FONT_NAME = resolve_font_name()
 
 
 class QuizScene(Scene):
@@ -238,8 +242,15 @@ class QuizScene(Scene):
         *,
         bold: bool = False,
         center: bool = False,
+        runtime: Runtime | None = None,
     ) -> None:
-        font = pygame.font.SysFont("arial", size, bold=bold)
+        if runtime is not None:
+            font = runtime.assets.font(size, bold=bold)
+        else:
+            if _QUIZ_FONT_NAME is not None:
+                font = pygame.font.SysFont(_QUIZ_FONT_NAME, size, bold=bold)
+            else:
+                font = pygame.font.Font(None, size)
         text_surface = font.render(text, True, color)
         rect = text_surface.get_rect()
         if center:
