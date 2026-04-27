@@ -9,6 +9,6 @@ class RegistryTests(unittest.TestCase):
 
         self.assertEqual(
             [game.game_id for game in games],
-            ["counting", "letters", "shapes", "matching", "pick-cards", "key-sprout", "hanzi-pinyin-path"],
+            ["counting", "letters", "shapes", "matching", "pick-cards", "key-sprout", "hanzi_pinyin_path"],
         )
         self.assertTrue(all(callable(game.scene_factory) for game in games))

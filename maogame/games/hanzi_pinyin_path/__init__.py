@@ -8,7 +8,7 @@ def _create_scene():
 
 
 GAME = GameSpec(
-    game_id="hanzi-pinyin-path",
+    game_id="hanzi_pinyin_path",
     title="汉字拼音小径",
     summary="按年级练习汉字与拼音对应，支持选择与连线",
     age_band="6-12",
