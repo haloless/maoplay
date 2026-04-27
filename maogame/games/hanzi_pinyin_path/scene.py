@@ -491,15 +491,18 @@ class HanziPinyinPathScene(Scene):
         _draw_text(surface, "汉字拼音小径", 36, (W // 2, 44), palette.accent, bold=True, center=True)
         _draw_text(surface, "本局结束！", 28, (W // 2, 90), palette.text, center=True)
 
-        card = pygame.Rect((W - 480) // 2, 120, 480, 280)
+        card = pygame.Rect((W - 480) // 2, 120, 480, 326)
         _draw_card(surface, card, palette.card, palette.card_border, radius=24)
 
+        avg_ms = result.avg_answer_ms
+        avg_display = f"{avg_ms / 1000:.1f} 秒" if avg_ms else "—"
         rows = [
             ("总分",       str(result.score)),
             ("答对",       f"{result.correct_count} 题"),
             ("答错",       f"{result.wrong_count} 题"),
             ("正确率",     f"{result.accuracy_percent}%"),
             ("最高连击",   str(result.best_streak)),
+            ("平均用时",   avg_display),
         ]
         for i, (label, value) in enumerate(rows):
             row_y = card.top + 30 + i * 46
