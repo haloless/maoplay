@@ -162,6 +162,8 @@ class HanziPinyinPathScene(Scene):
     def handle_event(
         self, event: pygame.event.Event, runtime: Runtime
     ) -> SceneTransition | None:
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            return self.handle_mouse(event, runtime)
         if event.type != pygame.KEYDOWN:
             return None
 
@@ -298,12 +300,6 @@ class HanziPinyinPathScene(Scene):
     # ------------------------------------------------------------------
 
     def update(self, dt: float, runtime: Runtime) -> SceneTransition | None:
-        # Consume mouse events here so we can return transitions
-        for event in pygame.event.get(pygame.MOUSEBUTTONDOWN):
-            result = self.handle_mouse(event, runtime)
-            if result is not None:
-                return result
-
         if self._state != "playing":
             return None
 
