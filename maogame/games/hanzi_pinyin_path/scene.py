@@ -547,11 +547,13 @@ class HanziPinyinPathScene(Scene):
     def _next_question(self) -> None:
         direction = _MODE_OPTIONS[self._mode_index][2]
         difficulty = _DIFF_OPTIONS[self._diff_index][1]
+        d_pool = self._entries if difficulty == "hard" else None
         self._question = build_mcq_question(
             self._rng,
             self._pool,
             direction,
             difficulty,
+            distractor_pool=d_pool,
         )
         self._selected = 0
         self._q_start_time = time.monotonic()

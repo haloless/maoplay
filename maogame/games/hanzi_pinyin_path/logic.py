@@ -417,6 +417,8 @@ def build_mcq_question(
     entries: list[CharacterEntry],
     direction: Literal["hz2py", "py2hz"],
     difficulty: str = "medium",
+    *,
+    distractor_pool: list[CharacterEntry] | None = None,
 ) -> MCQQuestion | None:
     """Build a 4-choice MCQ question from *entries*.
 
@@ -424,18 +426,23 @@ def build_mcq_question(
       'hz2py' – show a hanzi, pick the correct pinyin.
       'py2hz' – show a pinyin, pick the correct hanzi.
 
+    distractor_pool: optional wider pool used only for distractor selection
+      (useful for hard mode cross-grade distractors).  When None, *entries*
+      is used as the distractor source as well.
+
     Returns None if the pool is too small (< 4 unique options).
     """
     if len(entries) < 4:
         return None
 
+    d_pool = distractor_pool if distractor_pool is not None else entries
     correct = rng.choice(entries)
 
     if direction == "hz2py":
         # Use display (unicode) form so choices render correctly in the UI.
         # Deduplication inside _pick_distractors_pinyin still uses pinyin_full.
         correct_display = correct.pinyin_display
-        distractors_full = _pick_distractors_pinyin(correct, entries, rng, difficulty, 3)
+        distractors_full = _pick_distractors_pinyin(correct, d_pool, rng, difficulty, 3)
         if len(distractors_full) < 3:
             return None
         distractor_displays = [_pinyin_full_to_display(d) for d in distractors_full]
@@ -449,7 +456,7 @@ def build_mcq_question(
         )
     else:  # py2hz
         correct_answer = correct.hanzi
-        distractors = _pick_distractors_hanzi(correct, entries, rng, 3)
+        distractors = _pick_distractors_hanzi(correct, d_pool, rng, 3)
         if len(distractors) < 3:
             return None
         choices_list = [correct_answer] + distractors
