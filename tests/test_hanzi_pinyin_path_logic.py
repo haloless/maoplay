@@ -8,6 +8,7 @@ from maogame.games.hanzi_pinyin_path.logic import (
     ALL_GRADE_LABELS,
     CharacterEntry,
     RoundStats,
+    _pick_distractors_pinyin,
     build_match_pairs,
     build_mcq_question,
     compute_round_result,
@@ -228,6 +229,53 @@ class TestRoundStats(unittest.TestCase):
         self.assertEqual(result.correct_count, 1)
         self.assertEqual(result.wrong_count, 1)
         self.assertEqual(result.accuracy_percent, 50.0)
+
+
+class TestReproducibility(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        entries = load_entries_from_markdown(str(_DATA_FILE))
+        cls.pool = filter_entries(entries, grades_for_years(1, 6))
+
+    def test_fixed_seed_deterministic_sequence(self) -> None:
+        """Same seed must produce identical question prompts across two runs."""
+        def run(seed: int) -> list[str]:
+            rng = random.Random(seed)
+            prompts = []
+            for _ in range(10):
+                q = build_mcq_question(rng, self.pool, "hz2py", "medium")
+                self.assertIsNotNone(q)
+                prompts.append(q.prompt)
+            return prompts
+
+        self.assertEqual(run(99), run(99))
+        self.assertNotEqual(run(1), run(2))
+
+
+class TestHardDistractors(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        all_entries = load_entries_from_markdown(str(_DATA_FILE))
+        cls.pool = filter_entries(all_entries, grades_for_years(1, 1))
+        cls.all_entries = all_entries
+
+    def test_hard_distractor_pool_can_include_cross_grade_entries(self) -> None:
+        """With full entry set as distractor_pool, distractors may come from
+        grades outside the play pool.  Over many trials at least one such
+        cross-grade distractor must appear."""
+        pool_pinyins = {e.pinyin_full for e in self.pool}
+        rng = random.Random(42)
+        found_cross_grade = False
+        for _ in range(200):
+            correct = rng.choice(self.pool)
+            distractors = _pick_distractors_pinyin(correct, self.all_entries, rng, "hard", 3)
+            if any(d not in pool_pinyins for d in distractors):
+                found_cross_grade = True
+                break
+        self.assertTrue(
+            found_cross_grade,
+            "Expected at least one cross-grade distractor in 200 hard-mode trials",
+        )
 
 
 if __name__ == "__main__":
