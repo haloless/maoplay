@@ -516,10 +516,31 @@ def judge_pinyin_answer(
 # Scoring
 # ---------------------------------------------------------------------------
 
+# Per-question time limits (seconds) by difficulty
+QUESTION_TIME_LIMITS: dict[str, float] = {
+    "easy":   20.0,
+    "medium": 12.0,
+    "hard":    8.0,
+}
+
+
 def score_hit(streak: int, base: int = 10) -> int:
     """Points awarded for a correct answer given the current streak."""
     bonus = min(streak * 2, 20)
     return base + bonus
+
+
+def score_speed_bonus(elapsed_ms: int, time_limit_s: float) -> int:
+    """Extra points for answering quickly.
+
+    Returns 0-10 proportional to how much time is left when the answer is
+    submitted.  Returns 0 if the player runs out of time.
+    """
+    limit_ms = time_limit_s * 1000
+    remaining = limit_ms - elapsed_ms
+    if remaining <= 0:
+        return 0
+    return round(10 * remaining / limit_ms)
 
 
 def compute_round_result(stats: RoundStats, score: int) -> RoundResult:

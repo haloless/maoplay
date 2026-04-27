@@ -29,6 +29,7 @@ from .logic import (
     ALL_GRADE_LABELS,
     CharacterEntry,
     MCQQuestion,
+    QUESTION_TIME_LIMITS,
     RoundStats,
     build_mcq_question,
     compute_round_result,
@@ -36,6 +37,7 @@ from .logic import (
     grades_for_years,
     load_entries_from_markdown,
     score_hit,
+    score_speed_bonus,
 )
 
 
@@ -140,6 +142,8 @@ class HanziPinyinPathScene(Scene):
         self._feedback_timer = 0.0
         self._feedback_correct = False
         self._q_start_time = 0.0
+        self._time_limit = 12.0   # seconds per question; updated on round start
+        self._time_left = 12.0
 
     # ------------------------------------------------------------------
     # Scene lifecycle
@@ -310,6 +314,20 @@ class HanziPinyinPathScene(Scene):
                     self._go("result")
                 else:
                     self._next_question()
+            return None
+
+        # Countdown (only ticks when not in feedback phase)
+        if self._question is not None:
+            self._time_left = max(0.0, self._time_left - dt)
+            if self._time_left == 0.0:
+                # Time's up: count as wrong, advance
+                self._stats.record_wrong()
+                self._stats.record_time(int(self._time_limit * 1000))
+                self._round_index += 1
+                self._feedback_correct = False
+                self._streak = 0
+                self._feedback_timer = _FEEDBACK_DURATION
+
         return None
 
     # ------------------------------------------------------------------
@@ -415,6 +433,9 @@ class HanziPinyinPathScene(Scene):
         _draw_text(surface, f"分数: {self._score}", 20, (W - 160, 16), palette.text)
         _draw_text(surface, f"连击: {self._streak}", 20, (W - 280, 16), palette.text)
         _draw_text(surface, f"{grade_label}  {mode_name}  {diff_name}", 16, (W // 2, 16), palette.accent, center=True)
+        # Countdown timer
+        time_color = palette.error if self._time_left <= 3.0 else palette.text
+        _draw_text(surface, f"⏱ {self._time_left:.1f}s", 20, (W - 400, 16), time_color)
 
         if self._question is None:
             return
@@ -537,6 +558,8 @@ class HanziPinyinPathScene(Scene):
     def _start_round(self) -> None:
         grade_labels = _GRADE_OPTIONS[self._grade_index][1]
         self._pool = filter_entries(self._entries, grade_labels)
+        difficulty = _DIFF_OPTIONS[self._diff_index][1]
+        self._time_limit = QUESTION_TIME_LIMITS.get(difficulty, 12.0)
         self._round_index = 0
         self._score = 0
         self._streak = 0
@@ -556,6 +579,7 @@ class HanziPinyinPathScene(Scene):
             distractor_pool=d_pool,
         )
         self._selected = 0
+        self._time_left = self._time_limit
         self._q_start_time = time.monotonic()
 
     def _submit_answer(self) -> None:
@@ -569,6 +593,7 @@ class HanziPinyinPathScene(Scene):
             self._feedback_correct = True
             self._stats.record_correct()
             self._score += score_hit(self._streak)
+            self._score += score_speed_bonus(elapsed_ms, self._time_limit)
             self._streak += 1
         else:
             self._feedback_correct = False
