@@ -28,9 +28,11 @@ from maogame.core.scene import Scene, SceneTransition
 from .logic import (
     ALL_GRADE_LABELS,
     CharacterEntry,
+    MatchPair,
     MCQQuestion,
     QUESTION_TIME_LIMITS,
     RoundStats,
+    build_match_pairs,
     build_mcq_question,
     compute_round_result,
     filter_entries,
@@ -58,10 +60,13 @@ _GRADE_OPTIONS: list[tuple[str, list[str]]] = [
     ("一~六年级", grades_for_years(1, 6)),
 ]
 
-_MODE_OPTIONS: list[tuple[str, str, Literal["hz2py", "py2hz"]]] = [
+_MODE_OPTIONS: list[tuple[str, str, Literal["hz2py", "py2hz", "match"]]] = [
     ("模式一", "看汉字选拼音", "hz2py"),
     ("模式二", "看拼音选汉字", "py2hz"),
+    ("模式三", "连线配对",     "match"),
 ]
+
+_MATCH_PAIR_COUNTS: dict[str, int] = {"easy": 4, "medium": 6, "hard": 8}
 
 _DIFF_OPTIONS: list[tuple[str, str]] = [
     ("简单",  "easy"),
@@ -145,6 +150,16 @@ class HanziPinyinPathScene(Scene):
         self._time_limit = 12.0   # seconds per question; updated on round start
         self._time_left = 12.0
 
+        # Match mode state (Mode 3)
+        self._match_pairs: list[MatchPair] = []
+        self._match_left_rects: list[pygame.Rect] = []
+        self._match_right_rects: list[pygame.Rect] = []
+        self._match_selected_left: int = -1   # index of highlighted left card (-1 = none)
+        self._match_done: list[bool] = []     # which pairs are correctly matched
+        self._match_wrong_pair: tuple[int, int] | None = None  # (left_idx, right_idx) for wrong flash
+        self._match_wrong_timer: float = 0.0
+        self._match_start_time: float = 0.0
+
     # ------------------------------------------------------------------
     # Scene lifecycle
     # ------------------------------------------------------------------
@@ -186,6 +201,9 @@ class HanziPinyinPathScene(Scene):
         if self._state == "playing":
             return self._handle_play_event(event, runtime)
 
+        if self._state == "match":
+            return self._handle_match_key_event(event, runtime)
+
         if self._state == "result":
             return self._handle_result_event(event, runtime)
 
@@ -197,6 +215,7 @@ class HanziPinyinPathScene(Scene):
             "setup-mode":  lambda: self._go("setup-grade"),
             "setup-diff":  lambda: self._go("setup-mode"),
             "playing":     lambda: self._go("setup-grade"),
+            "match":       lambda: self._go("setup-grade"),
             "result":      lambda: self._go("setup-grade"),
         }
         handler = transitions.get(self._state)
@@ -240,6 +259,12 @@ class HanziPinyinPathScene(Scene):
             self._selected = 3
         elif is_confirm_key(event):
             self._submit_answer()
+        return None
+
+    def _handle_match_key_event(
+        self, event: pygame.event.Event, runtime: Runtime
+    ) -> SceneTransition | None:
+        # Esc is handled by _handle_back already; nothing else for keyboard in match mode
         return None
 
     def _handle_result_event(
@@ -289,6 +314,10 @@ class HanziPinyinPathScene(Scene):
                     self._submit_answer()
                     return None
 
+        if self._state == "match" and self._match_wrong_timer <= 0:
+            self._handle_match_click(pos)
+            return None
+
         if self._state == "result":
             for label, rect in self._result_buttons:
                 if rect.collidepoint(pos):
@@ -304,6 +333,9 @@ class HanziPinyinPathScene(Scene):
     # ------------------------------------------------------------------
 
     def update(self, dt: float, runtime: Runtime) -> SceneTransition | None:
+        if self._state == "match":
+            return self._update_match(dt)
+
         if self._state != "playing":
             return None
 
@@ -346,6 +378,8 @@ class HanziPinyinPathScene(Scene):
             self._render_setup(surface, runtime, "选择难度", _DIFF_OPTIONS, self._diff_index)
         elif self._state == "playing":
             self._render_play(surface, runtime)
+        elif self._state == "match":
+            self._render_match(surface, runtime)
         elif self._state == "result":
             self._render_result(surface, runtime)
 
@@ -564,8 +598,25 @@ class HanziPinyinPathScene(Scene):
         self._score = 0
         self._streak = 0
         self._stats = RoundStats()
-        self._go("playing")
-        self._next_question()
+        mode = _MODE_OPTIONS[self._mode_index][2]
+        if mode == "match":
+            self._go("match")
+            self._start_match_round()
+        else:
+            self._go("playing")
+            self._next_question()
+
+    def _start_match_round(self) -> None:
+        difficulty = _DIFF_OPTIONS[self._diff_index][1]
+        pair_count = _MATCH_PAIR_COUNTS.get(difficulty, 6)
+        self._match_pairs = build_match_pairs(self._rng, self._pool, pair_count, difficulty)
+        self._match_done = [False] * len(self._match_pairs)
+        self._match_selected_left = -1
+        self._match_wrong_pair = None
+        self._match_wrong_timer = 0.0
+        self._match_left_rects = []
+        self._match_right_rects = []
+        self._match_start_time = time.monotonic()
 
     def _next_question(self) -> None:
         direction = _MODE_OPTIONS[self._mode_index][2]
@@ -600,3 +651,100 @@ class HanziPinyinPathScene(Scene):
             self._stats.record_wrong()
             self._streak = 0
         self._feedback_timer = _FEEDBACK_DURATION
+
+    # ------------------------------------------------------------------
+    # Match mode helpers
+    # ------------------------------------------------------------------
+
+    def _handle_match_click(self, pos: tuple[int, int]) -> None:
+        """Process a mouse click during match mode."""
+        # Click on a left (hanzi) card
+        for i, rect in enumerate(self._match_left_rects):
+            if rect.collidepoint(pos) and not self._match_done[i]:
+                self._match_selected_left = i
+                return
+        # Click on a right (pinyin) card
+        if self._match_selected_left >= 0:
+            for j, rect in enumerate(self._match_right_rects):
+                if rect.collidepoint(pos) and not self._match_done[j]:
+                    left_idx = self._match_selected_left
+                    # Check correctness: pairs are ordered so index must match
+                    if left_idx == j:
+                        self._match_done[left_idx] = True
+                        self._stats.record_correct()
+                        self._score += score_hit(self._streak)
+                        self._streak += 1
+                    else:
+                        self._match_wrong_pair = (left_idx, j)
+                        self._match_wrong_timer = 0.5
+                        self._stats.record_wrong()
+                        self._streak = 0
+                    self._match_selected_left = -1
+                    return
+
+    def _update_match(self, dt: float) -> SceneTransition | None:
+        if self._match_wrong_timer > 0:
+            self._match_wrong_timer = max(0.0, self._match_wrong_timer - dt)
+            if self._match_wrong_timer == 0.0:
+                self._match_wrong_pair = None
+        # All matched → go to result
+        if self._match_pairs and all(self._match_done):
+            elapsed_ms = int((time.monotonic() - self._match_start_time) * 1000)
+            self._stats.record_time(elapsed_ms)
+            self._go("result")
+        return None
+
+    def _render_match(self, surface: pygame.Surface, runtime: Runtime) -> None:
+        config = runtime.config
+        palette = config.palette
+        W, H = config.window_width, config.window_height
+
+        _draw_text(surface, "连线配对", 36, (W // 2, 28), palette.accent, bold=True, center=True)
+        grade_label = _GRADE_OPTIONS[self._grade_index][0]
+        diff_name = _DIFF_OPTIONS[self._diff_index][0]
+        _draw_text(surface, f"{grade_label}  {diff_name}", 16, (W // 2, 62), palette.accent, center=True)
+        _draw_text(surface, f"分数: {self._score}  连击: {self._streak}", 18, (W // 2, 82), palette.text, center=True)
+
+        pairs = self._match_pairs
+        n = len(pairs)
+        if n == 0:
+            return
+
+        card_w, card_h = 140, 56
+        gap = 12
+        total_h = n * (card_h + gap) - gap
+        start_y = max(100, (H - total_h) // 2)
+        left_x = W // 2 - 180 - card_w
+        right_x = W // 2 + 180
+
+        self._match_left_rects = []
+        self._match_right_rects = []
+
+        for i, pair in enumerate(pairs):
+            y = start_y + i * (card_h + gap)
+            l_rect = pygame.Rect(left_x, y, card_w, card_h)
+            r_rect = pygame.Rect(right_x, y, card_w, card_h)
+            self._match_left_rects.append(l_rect)
+            self._match_right_rects.append(r_rect)
+
+            done = self._match_done[i]
+            wrong_l = self._match_wrong_pair and self._match_wrong_pair[0] == i
+            wrong_r = self._match_wrong_pair and self._match_wrong_pair[1] == i
+            selected = self._match_selected_left == i
+
+            if done:
+                l_fill = r_fill = palette.success
+            else:
+                l_fill = palette.card_selected if selected else palette.card
+                l_fill = palette.error if wrong_l else l_fill
+                r_fill = palette.error if wrong_r else palette.card
+
+            _draw_card(surface, l_rect, l_fill, palette.card_border)
+            _draw_text(surface, pair.left, 28, l_rect.center, palette.text, bold=True, center=True)
+            _draw_card(surface, r_rect, r_fill, palette.card_border)
+            _draw_text(surface, pair.right, 22, r_rect.center, palette.text, bold=True, center=True)
+
+        done_count = sum(self._match_done)
+        _draw_text(surface, f"{done_count}/{n} 配对完成", 18, (W // 2, H - 30), palette.accent, center=True)
+        _draw_text(surface, "点击左侧汉字，再点击右侧拼音完成配对  Esc 返回", 15,
+                   (W // 2, H - 14), palette.accent, center=True)
