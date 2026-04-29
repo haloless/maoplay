@@ -37,7 +37,9 @@ from .logic import (
     compute_round_result,
     filter_entries,
     grades_for_years,
+    judge_pinyin_answer,
     load_entries_from_markdown,
+    normalize_pinyin_input,
     score_hit,
     score_speed_bonus,
 )
@@ -60,10 +62,11 @@ _GRADE_OPTIONS: list[tuple[str, list[str]]] = [
     ("一~六年级", grades_for_years(1, 6)),
 ]
 
-_MODE_OPTIONS: list[tuple[str, str, Literal["hz2py", "py2hz", "match"]]] = [
+_MODE_OPTIONS: list[tuple[str, str, Literal["hz2py", "py2hz", "match", "input"]]] = [
     ("模式一", "看汉字选拼音", "hz2py"),
     ("模式二", "看拼音选汉字", "py2hz"),
     ("模式三", "连线配对",     "match"),
+    ("模式四", "拼音输入",     "input"),
 ]
 
 _MATCH_PAIR_COUNTS: dict[str, int] = {"easy": 4, "medium": 6, "hard": 8}
@@ -160,6 +163,17 @@ class HanziPinyinPathScene(Scene):
         self._match_wrong_timer: float = 0.0
         self._match_start_time: float = 0.0
 
+        # Input mode state (Mode 4)
+        self._input_entry: CharacterEntry | None = None
+        self._input_text: str = ""
+        self._input_tone: int = -1          # -1 = not yet chosen
+        self._input_submitted: bool = False
+        self._input_correct: bool = False
+        self._input_feedback_timer: float = 0.0
+        self._input_round_index: int = 0
+        self._input_strict_tone: bool = True
+        self._tone_btn_rects: list[pygame.Rect] = []
+
     # ------------------------------------------------------------------
     # Scene lifecycle
     # ------------------------------------------------------------------
@@ -204,6 +218,9 @@ class HanziPinyinPathScene(Scene):
         if self._state == "match":
             return self._handle_match_key_event(event, runtime)
 
+        if self._state == "input":
+            return self._handle_input_key_event(event, runtime)
+
         if self._state == "result":
             return self._handle_result_event(event, runtime)
 
@@ -216,6 +233,7 @@ class HanziPinyinPathScene(Scene):
             "setup-diff":  lambda: self._go("setup-mode"),
             "playing":     lambda: self._go("setup-grade"),
             "match":       lambda: self._go("setup-grade"),
+            "input":       lambda: self._go("setup-grade"),
             "result":      lambda: self._go("setup-grade"),
         }
         handler = transitions.get(self._state)
@@ -265,6 +283,39 @@ class HanziPinyinPathScene(Scene):
         self, event: pygame.event.Event, runtime: Runtime
     ) -> SceneTransition | None:
         # Esc is handled by _handle_back already; nothing else for keyboard in match mode
+        return None
+
+    def _handle_input_key_event(
+        self, event: pygame.event.Event, runtime: Runtime
+    ) -> SceneTransition | None:
+        if self._input_feedback_timer > 0:
+            return None
+        key = event.key
+        # Tone shortcuts 1-4, 0 for neutral
+        if key == pygame.K_0:
+            self._input_tone = 0
+            self._try_submit_input()
+        elif key == pygame.K_1:
+            self._input_tone = 1
+            self._try_submit_input()
+        elif key == pygame.K_2:
+            self._input_tone = 2
+            self._try_submit_input()
+        elif key == pygame.K_3:
+            self._input_tone = 3
+            self._try_submit_input()
+        elif key == pygame.K_4:
+            self._input_tone = 4
+            self._try_submit_input()
+        elif key == pygame.K_BACKSPACE:
+            self._input_text = self._input_text[:-1]
+        elif key == pygame.K_RETURN or key == pygame.K_KP_ENTER:
+            if self._input_text and self._input_tone >= 0:
+                self._try_submit_input()
+        else:
+            char = event.unicode.lower()
+            if char.isalpha() or char == "v":
+                self._input_text += char
         return None
 
     def _handle_result_event(
@@ -318,6 +369,22 @@ class HanziPinyinPathScene(Scene):
             self._handle_match_click(pos)
             return None
 
+        if self._state == "input" and self._input_feedback_timer <= 0:
+            # Tone buttons
+            _TONE_LABELS = ["一声", "二声", "三声", "四声", "轻声", "清除"]
+            for i, rect in enumerate(self._tone_btn_rects):
+                if rect.collidepoint(pos):
+                    if i == 5:  # 清除
+                        self._input_text = ""
+                        self._input_tone = -1
+                    elif i == 4:  # 轻声
+                        self._input_tone = 0
+                        self._try_submit_input()
+                    else:
+                        self._input_tone = i + 1
+                        self._try_submit_input()
+                    return None
+
         if self._state == "result":
             for label, rect in self._result_buttons:
                 if rect.collidepoint(pos):
@@ -335,6 +402,9 @@ class HanziPinyinPathScene(Scene):
     def update(self, dt: float, runtime: Runtime) -> SceneTransition | None:
         if self._state == "match":
             return self._update_match(dt)
+
+        if self._state == "input":
+            return self._update_input(dt)
 
         if self._state != "playing":
             return None
@@ -380,6 +450,8 @@ class HanziPinyinPathScene(Scene):
             self._render_play(surface, runtime)
         elif self._state == "match":
             self._render_match(surface, runtime)
+        elif self._state == "input":
+            self._render_input(surface, runtime)
         elif self._state == "result":
             self._render_result(surface, runtime)
 
@@ -602,6 +674,11 @@ class HanziPinyinPathScene(Scene):
         if mode == "match":
             self._go("match")
             self._start_match_round()
+        elif mode == "input":
+            self._input_strict_tone = _DIFF_OPTIONS[self._diff_index][1] != "easy"
+            self._input_round_index = 0
+            self._go("input")
+            self._next_input_question()
         else:
             self._go("playing")
             self._next_question()
@@ -748,3 +825,140 @@ class HanziPinyinPathScene(Scene):
         _draw_text(surface, f"{done_count}/{n} 配对完成", 18, (W // 2, H - 30), palette.accent, center=True)
         _draw_text(surface, "点击左侧汉字，再点击右侧拼音完成配对  Esc 返回", 15,
                    (W // 2, H - 14), palette.accent, center=True)
+
+    # ------------------------------------------------------------------
+    # Input mode helpers (Mode 4)
+    # ------------------------------------------------------------------
+
+    def _next_input_question(self) -> None:
+        if not self._pool:
+            return
+        self._input_entry = self._rng.choice(self._pool)
+        self._input_text = ""
+        self._input_tone = -1
+        self._input_submitted = False
+        self._time_left = self._time_limit
+        self._q_start_time = time.monotonic()
+
+    def _try_submit_input(self) -> None:
+        entry = self._input_entry
+        if entry is None or not self._input_text:
+            return
+        if self._input_tone < 0:
+            return
+        elapsed_ms = int((time.monotonic() - self._q_start_time) * 1000)
+        self._stats.record_time(elapsed_ms)
+        self._input_round_index += 1
+        correct = judge_pinyin_answer(
+            entry,
+            normalize_pinyin_input(self._input_text),
+            self._input_tone,
+            strict_tone=self._input_strict_tone,
+        )
+        self._input_correct = correct
+        self._input_submitted = True
+        if correct:
+            self._stats.record_correct()
+            self._score += score_hit(self._streak)
+            self._score += score_speed_bonus(elapsed_ms, self._time_limit)
+            self._streak += 1
+        else:
+            self._stats.record_wrong()
+            self._streak = 0
+        self._input_feedback_timer = _FEEDBACK_DURATION
+
+    def _update_input(self, dt: float) -> SceneTransition | None:
+        if self._input_feedback_timer > 0:
+            self._input_feedback_timer = max(0.0, self._input_feedback_timer - dt)
+            if self._input_feedback_timer == 0.0:
+                if self._input_round_index >= _TOTAL_ROUNDS:
+                    self._go("result")
+                else:
+                    self._next_input_question()
+            return None
+        # Countdown
+        if self._input_entry is not None and not self._input_submitted:
+            self._time_left = max(0.0, self._time_left - dt)
+            if self._time_left == 0.0:
+                self._stats.record_wrong()
+                self._stats.record_time(int(self._time_limit * 1000))
+                self._input_round_index += 1
+                self._input_correct = False
+                self._input_submitted = True
+                self._streak = 0
+                self._input_feedback_timer = _FEEDBACK_DURATION
+        return None
+
+    def _render_input(self, surface: pygame.Surface, runtime: Runtime) -> None:
+        config = runtime.config
+        palette = config.palette
+        W, H = config.window_width, config.window_height
+
+        # HUD
+        grade_label = _GRADE_OPTIONS[self._grade_index][0]
+        diff_name = _DIFF_OPTIONS[self._diff_index][0]
+        mode_name = _MODE_OPTIONS[self._mode_index][0]
+        _draw_text(surface, f"\u7b2c {self._input_round_index}/{_TOTAL_ROUNDS} \u9898", 20, (20, 16), palette.text)
+        _draw_text(surface, f"\u5206\u6570: {self._score}", 20, (W - 160, 16), palette.text)
+        _draw_text(surface, f"\u8fde\u51fb: {self._streak}", 20, (W - 280, 16), palette.text)
+        _draw_text(surface, f"{grade_label}  {mode_name}  {diff_name}", 16, (W // 2, 16), palette.accent, center=True)
+        time_color = palette.error if self._time_left <= 3.0 else palette.text
+        _draw_text(surface, f"\u23f1 {self._time_left:.1f}s", 20, (W - 400, 16), time_color)
+
+        entry = self._input_entry
+        if entry is None:
+            return
+
+        # Prompt card
+        prompt_rect = pygame.Rect((W - 220) // 2, 70, 220, 110)
+        _draw_card(surface, prompt_rect, palette.card, palette.accent, radius=24)
+        if _SCENE_FONT_NAME is not None:
+            font = pygame.font.SysFont(_SCENE_FONT_NAME, 72, bold=True)
+        else:
+            font = pygame.font.Font(None, 72)
+        ts = font.render(entry.hanzi, True, palette.text)
+        surface.blit(ts, ts.get_rect(center=prompt_rect.center))
+
+        # Input display box
+        box_rect = pygame.Rect((W - 320) // 2, 200, 320, 56)
+        _draw_card(surface, box_rect, palette.card, palette.accent)
+        display_text = self._input_text or "\u8bf7\u8f93\u5165\u62fc\u97f3..."
+        text_color = palette.text if self._input_text else palette.accent
+        _draw_text(surface, display_text, 26, box_rect.center, text_color, center=True)
+
+        # Feedback banner
+        if self._input_submitted:
+            if self._input_correct:
+                fb_msg = f"\u2713 \u6b63\u786e\uff01{entry.pinyin_display}"
+                fb_color = palette.success
+            else:
+                fb_msg = f"\u2717 \u6b63\u786e\u62fc\u97f3: {entry.pinyin_display}"
+                fb_color = palette.error
+            _draw_text(surface, fb_msg, 24, (W // 2, 268), fb_color, bold=True, center=True)
+
+        # Tone buttons
+        tone_labels = ["\u4e00\u58f0", "\u4e8c\u58f0", "\u4e09\u58f0", "\u56db\u58f0", "\u8f7b\u58f0", "\u6e05\u9664"]
+        btn_w, btn_h = 76, 48
+        gap = 10
+        total_w = len(tone_labels) * (btn_w + gap) - gap
+        start_x = (W - total_w) // 2
+        btn_y = 300
+
+        self._tone_btn_rects = []
+        for i, lbl in enumerate(tone_labels):
+            rect = pygame.Rect(start_x + i * (btn_w + gap), btn_y, btn_w, btn_h)
+            self._tone_btn_rects.append(rect)
+            is_selected = (i < 4 and self._input_tone == i + 1) or (i == 4 and self._input_tone == 0)
+            fill = palette.card_selected if is_selected else palette.card
+            fill = palette.error if i == 5 else fill
+            _draw_card(surface, rect, fill, palette.card_border, radius=12)
+            _draw_text(surface, lbl, 18, rect.center, palette.text, bold=is_selected, center=True)
+            # Key hint
+            hint = str(i + 1) if i < 4 else ("0" if i == 4 else "")
+            if hint:
+                _draw_text(surface, hint, 12, (rect.left + 6, rect.top + 4), palette.accent)
+
+        strict_label = "\u58f0\u8c03\u4e25\u683c: \u5f00" if self._input_strict_tone else "\u58f0\u8c03\u4e25\u683c: \u5173"
+        _draw_text(surface, strict_label, 14, (W // 2, btn_y + btn_h + 14), palette.accent, center=True)
+        _draw_text(surface, "\u952e\u76d8\u8f93\u5165\u5b57\u6bcd + \u9f20\u6807\u70b9\u51fb\u58f0\u8c03\u6309\u949f\u63d0\u4ea4  Esc \u8fd4\u56de", 14,
+                   (W // 2, H - 16), palette.accent, center=True)
