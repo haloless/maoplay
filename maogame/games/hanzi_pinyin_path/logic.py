@@ -169,6 +169,7 @@ class MCQQuestion:
     choices: tuple[str, ...]      # 4 answer strings
     answer_index: int
     direction: Literal["hz2py", "py2hz"]  # hz2py: show hanzi, pick pinyin; reverse
+    source_entry: "CharacterEntry | None" = None  # original entry, for wrong-answer tracking
 
 
 @dataclass(frozen=True)
@@ -453,6 +454,7 @@ def build_mcq_question(
             choices=tuple(choices_list),
             answer_index=choices_list.index(correct_display),
             direction=direction,
+            source_entry=correct,
         )
     else:  # py2hz
         correct_answer = correct.hanzi
@@ -466,6 +468,7 @@ def build_mcq_question(
             choices=tuple(choices_list),
             answer_index=choices_list.index(correct_answer),
             direction=direction,
+            source_entry=correct,
         )
 
 

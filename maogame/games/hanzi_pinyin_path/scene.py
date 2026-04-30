@@ -153,6 +153,9 @@ class HanziPinyinPathScene(Scene):
         self._time_limit = 12.0   # seconds per question; updated on round start
         self._time_left = 12.0
 
+        # Wrong-answer tracking for "practice wrong" replay
+        self._wrong_entries: list[CharacterEntry] = []
+
         # Match mode state (Mode 3)
         self._match_pairs: list[MatchPair] = []
         self._match_left_rects: list[pygame.Rect] = []
@@ -390,6 +393,8 @@ class HanziPinyinPathScene(Scene):
                 if rect.collidepoint(pos):
                     if label == "再来一局":
                         self._start_round()
+                    elif label == "练错题":
+                        self._start_wrong_round()
                     else:
                         return SceneTransition(next_scene=runtime.launcher_scene())
 
@@ -636,21 +641,25 @@ class HanziPinyinPathScene(Scene):
             _draw_text(surface, label, 20, (card.left + 60, row_y + 12), palette.text)
             _draw_text(surface, value, 22, (card.right - 60, row_y + 12), palette.accent, bold=True)
 
-        # Buttons
-        btn_w, btn_h = 180, 52
-        btn_gap = 24
-        total_btn_w = btn_w * 2 + btn_gap
+        # Buttons: show "练错题" only when there are wrong answers
+        has_wrong = len(self._wrong_entries) >= 4
+        btn_w, btn_h = 160, 52
+        btn_gap = 16
+        btn_labels = ["再来一局"]
+        if has_wrong:
+            btn_labels.append("练错题")
+        btn_labels.append("返回菜单")
+        total_btn_w = len(btn_labels) * (btn_w + btn_gap) - btn_gap
         btn_y = card.bottom + 36
-        labels = ["再来一局", "返回菜单"]
         self._result_buttons = []
-        for i, lbl in enumerate(labels):
+        for i, lbl in enumerate(btn_labels):
             bx = (W - total_btn_w) // 2 + i * (btn_w + btn_gap)
             btn_rect = pygame.Rect(bx, btn_y, btn_w, btn_h)
             self._result_buttons.append((lbl, btn_rect))
             fill = palette.accent if i == 0 else palette.card
             text_color = palette.card if i == 0 else palette.text
             _draw_card(surface, btn_rect, fill, palette.card_border, radius=16)
-            _draw_text(surface, lbl, 22, btn_rect.center, text_color, bold=True, center=True)
+            _draw_text(surface, lbl, 20, btn_rect.center, text_color, bold=True, center=True)
 
         _draw_text(surface, "Enter 再来一局  Esc 返回菜单", 16, (W // 2, btn_y + btn_h + 20), palette.accent, center=True)
 
@@ -661,6 +670,28 @@ class HanziPinyinPathScene(Scene):
     def _go(self, state: str) -> None:
         self._state = state
 
+    def _start_wrong_round(self) -> None:
+        """Start a replay round using only wrong-answered entries as the pool."""
+        if not self._wrong_entries:
+            return
+        self._pool = list(self._wrong_entries)
+        self._round_index = 0
+        self._score = 0
+        self._streak = 0
+        self._stats = RoundStats()
+        self._wrong_entries = []
+        mode = _MODE_OPTIONS[self._mode_index][2]
+        if mode == "input":
+            self._input_round_index = 0
+            self._go("input")
+            self._next_input_question()
+        elif mode == "match":
+            self._go("match")
+            self._start_match_round()
+        else:
+            self._go("playing")
+            self._next_question()
+
     def _start_round(self) -> None:
         grade_labels = _GRADE_OPTIONS[self._grade_index][1]
         self._pool = filter_entries(self._entries, grade_labels)
@@ -670,6 +701,7 @@ class HanziPinyinPathScene(Scene):
         self._score = 0
         self._streak = 0
         self._stats = RoundStats()
+        self._wrong_entries = []
         mode = _MODE_OPTIONS[self._mode_index][2]
         if mode == "match":
             self._go("match")
@@ -727,6 +759,8 @@ class HanziPinyinPathScene(Scene):
             self._feedback_correct = False
             self._stats.record_wrong()
             self._streak = 0
+            if q.source_entry is not None:
+                self._wrong_entries.append(q.source_entry)
         self._feedback_timer = _FEEDBACK_DURATION
 
     # ------------------------------------------------------------------
@@ -865,6 +899,7 @@ class HanziPinyinPathScene(Scene):
         else:
             self._stats.record_wrong()
             self._streak = 0
+            self._wrong_entries.append(entry)
         self._input_feedback_timer = _FEEDBACK_DURATION
 
     def _update_input(self, dt: float) -> SceneTransition | None:
