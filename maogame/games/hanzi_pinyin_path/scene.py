@@ -203,6 +203,10 @@ class HanziPinyinPathScene(Scene):
         if event.type != pygame.KEYDOWN:
             return None
 
+        # In input mode, Backspace should edit text instead of navigating back.
+        if self._state == "input" and event.key == pygame.K_BACKSPACE:
+            return self._handle_input_key_event(event, runtime)
+
         if is_back_key(event):
             return self._handle_back(runtime)
 
