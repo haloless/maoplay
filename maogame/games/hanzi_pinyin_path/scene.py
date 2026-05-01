@@ -14,6 +14,7 @@ Currently implements:
 
 from __future__ import annotations
 
+from array import array
 import math
 import time
 from pathlib import Path
@@ -178,6 +179,12 @@ class HanziPinyinPathScene(Scene):
         self._input_strict_tone: bool = True
         self._tone_btn_rects: list[pygame.Rect] = []
 
+        # Audio feedback state (safe fallback when mixer/audio device is unavailable)
+        self._audio_attempted: bool = False
+        self._audio_enabled: bool = False
+        self._sfx: dict[str, pygame.mixer.Sound] = {}
+        self._sfx_last_played: dict[str, float] = {}
+
     # ------------------------------------------------------------------
     # Scene lifecycle
     # ------------------------------------------------------------------
@@ -189,8 +196,77 @@ class HanziPinyinPathScene(Scene):
                 self._entries = load_entries_from_markdown(str(_DATA_FILE))
             except FileNotFoundError:
                 self._entries = []
+        self._init_audio()
         self._state = "setup-grade"
         self._cursor = self._grade_index
+
+    def _make_tone_sound(self, frequency_hz: float, duration_ms: int, volume: float) -> pygame.mixer.Sound | None:
+        init = pygame.mixer.get_init()
+        if init is None:
+            return None
+        sample_rate, sample_format, channels = init
+        if abs(sample_format) != 16:
+            return None
+
+        signed = sample_format < 0
+        sample_count = max(1, int(sample_rate * duration_ms / 1000))
+        amp = int(32767 * max(0.0, min(volume, 1.0)))
+        pcm = array("h" if signed else "H")
+
+        for i in range(sample_count):
+            phase = (2.0 * math.pi * frequency_hz * i) / sample_rate
+            envelope = 1.0 - (i / sample_count)
+            sample = int(math.sin(phase) * amp * envelope)
+            if not signed:
+                sample += 32768
+            if channels <= 1:
+                pcm.append(sample)
+            else:
+                for _ in range(channels):
+                    pcm.append(sample)
+
+        try:
+            return pygame.mixer.Sound(buffer=pcm.tobytes())
+        except pygame.error:
+            return None
+
+    def _init_audio(self) -> None:
+        if self._audio_attempted:
+            return
+        self._audio_attempted = True
+
+        try:
+            if pygame.mixer.get_init() is None:
+                pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512)
+        except pygame.error:
+            self._audio_enabled = False
+            return
+
+        sfx_map = {
+            "correct": self._make_tone_sound(880.0, 120, 0.23),
+            "wrong": self._make_tone_sound(230.0, 180, 0.20),
+            "combo": self._make_tone_sound(1160.0, 160, 0.25),
+        }
+        self._sfx = {name: snd for name, snd in sfx_map.items() if snd is not None}
+        self._audio_enabled = bool(self._sfx)
+
+    def _play_sfx(self, key: str, *, cooldown_s: float = 0.06) -> None:
+        if not self._audio_enabled:
+            return
+        sound = self._sfx.get(key)
+        if sound is None:
+            return
+
+        now = time.monotonic()
+        last = self._sfx_last_played.get(key, 0.0)
+        if now - last < cooldown_s:
+            return
+
+        try:
+            sound.play()
+            self._sfx_last_played[key] = now
+        except pygame.error:
+            self._audio_enabled = False
 
     # ------------------------------------------------------------------
     # Event handling
@@ -439,6 +515,7 @@ class HanziPinyinPathScene(Scene):
                 self._feedback_correct = False
                 self._streak = 0
                 self._feedback_timer = _FEEDBACK_DURATION
+                self._play_sfx("wrong")
 
         return None
 
@@ -775,12 +852,14 @@ class HanziPinyinPathScene(Scene):
             self._score += score_hit(self._streak)
             self._score += score_speed_bonus(elapsed_ms, self._time_limit)
             self._streak += 1
+            self._play_sfx("combo" if self._streak >= 5 else "correct")
         else:
             self._feedback_correct = False
             self._stats.record_wrong()
             self._streak = 0
             if q.source_entry is not None:
                 self._wrong_entries.append(q.source_entry)
+            self._play_sfx("wrong")
         self._feedback_timer = _FEEDBACK_DURATION
 
     # ------------------------------------------------------------------
@@ -805,11 +884,13 @@ class HanziPinyinPathScene(Scene):
                         self._stats.record_correct()
                         self._score += score_hit(self._streak)
                         self._streak += 1
+                        self._play_sfx("combo" if self._streak >= 5 else "correct")
                     else:
                         self._match_wrong_pair = (left_idx, j)
                         self._match_wrong_timer = 0.5
                         self._stats.record_wrong()
                         self._streak = 0
+                        self._play_sfx("wrong")
                     self._match_selected_left = -1
                     return
 
@@ -916,10 +997,12 @@ class HanziPinyinPathScene(Scene):
             self._score += score_hit(self._streak)
             self._score += score_speed_bonus(elapsed_ms, self._time_limit)
             self._streak += 1
+            self._play_sfx("combo" if self._streak >= 5 else "correct")
         else:
             self._stats.record_wrong()
             self._streak = 0
             self._wrong_entries.append(entry)
+            self._play_sfx("wrong")
         self._input_feedback_timer = _FEEDBACK_DURATION
 
     def _update_input(self, dt: float) -> SceneTransition | None:
@@ -942,6 +1025,7 @@ class HanziPinyinPathScene(Scene):
                 self._input_submitted = True
                 self._streak = 0
                 self._input_feedback_timer = _FEEDBACK_DURATION
+                self._play_sfx("wrong")
         return None
 
     def _render_input(self, surface: pygame.Surface, runtime: Runtime) -> None:
