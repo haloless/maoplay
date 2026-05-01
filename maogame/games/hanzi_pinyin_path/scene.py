@@ -184,6 +184,9 @@ class HanziPinyinPathScene(Scene):
         self._audio_enabled: bool = False
         self._sfx: dict[str, pygame.mixer.Sound] = {}
         self._sfx_last_played: dict[str, float] = {}
+        # Combo banner animation state
+        self._combo_banner_text: str = ""
+        self._combo_banner_timer: float = 0.0
 
     # ------------------------------------------------------------------
     # Scene lifecycle
@@ -267,6 +270,29 @@ class HanziPinyinPathScene(Scene):
             self._sfx_last_played[key] = now
         except pygame.error:
             self._audio_enabled = False
+
+    def _trigger_combo_banner(self, streak: int) -> None:
+        if streak in (3, 5, 8) or (streak > 8 and streak % 5 == 0):
+            self._combo_banner_text = f"连击 x{streak}!"
+            self._combo_banner_timer = 0.85
+
+    def _tick_combo_banner(self, dt: float) -> None:
+        if self._combo_banner_timer > 0.0:
+            self._combo_banner_timer = max(0.0, self._combo_banner_timer - dt)
+
+    def _render_combo_banner(self, surface: pygame.Surface, runtime: Runtime) -> None:
+        if self._combo_banner_timer <= 0.0 or not self._combo_banner_text:
+            return
+        config = runtime.config
+        palette = config.palette
+        W = config.window_width
+
+        duration = 0.85
+        progress = max(0.0, min(1.0, self._combo_banner_timer / duration))
+        phase = 1.0 - progress
+        size = 28 + int(6 * abs(math.sin(phase * math.pi * 2.2)) * progress)
+        y = 108 - int(10 * phase)
+        _draw_text(surface, self._combo_banner_text, size, (W // 2, y), palette.accent, bold=True, center=True)
 
     # ------------------------------------------------------------------
     # Event handling
@@ -486,6 +512,7 @@ class HanziPinyinPathScene(Scene):
     # ------------------------------------------------------------------
 
     def update(self, dt: float, runtime: Runtime) -> SceneTransition | None:
+        self._tick_combo_banner(dt)
         if self._state == "match":
             return self._update_match(dt)
 
@@ -706,6 +733,8 @@ class HanziPinyinPathScene(Scene):
 
             _draw_text(surface, msg, size, (x, y), color, bold=True, center=True)
 
+            self._render_combo_banner(surface, runtime)
+
     # ------------------------------------------------------------------
     # Result screen
     # ------------------------------------------------------------------
@@ -853,6 +882,7 @@ class HanziPinyinPathScene(Scene):
             self._score += score_speed_bonus(elapsed_ms, self._time_limit)
             self._streak += 1
             self._play_sfx("combo" if self._streak >= 5 else "correct")
+            self._trigger_combo_banner(self._streak)
         else:
             self._feedback_correct = False
             self._stats.record_wrong()
@@ -885,6 +915,7 @@ class HanziPinyinPathScene(Scene):
                         self._score += score_hit(self._streak)
                         self._streak += 1
                         self._play_sfx("combo" if self._streak >= 5 else "correct")
+                        self._trigger_combo_banner(self._streak)
                     else:
                         self._match_wrong_pair = (left_idx, j)
                         self._match_wrong_timer = 0.5
@@ -960,6 +991,7 @@ class HanziPinyinPathScene(Scene):
         _draw_text(surface, f"{done_count}/{n} 配对完成", 18, (W // 2, H - 30), palette.accent, center=True)
         _draw_text(surface, "点击左侧汉字，再点击右侧拼音完成配对  Esc 返回", 15,
                    (W // 2, H - 14), palette.accent, center=True)
+        self._render_combo_banner(surface, runtime)
 
     # ------------------------------------------------------------------
     # Input mode helpers (Mode 4)
@@ -998,6 +1030,7 @@ class HanziPinyinPathScene(Scene):
             self._score += score_speed_bonus(elapsed_ms, self._time_limit)
             self._streak += 1
             self._play_sfx("combo" if self._streak >= 5 else "correct")
+            self._trigger_combo_banner(self._streak)
         else:
             self._stats.record_wrong()
             self._streak = 0
@@ -1101,3 +1134,4 @@ class HanziPinyinPathScene(Scene):
         _draw_text(surface, strict_label, 14, (W // 2, btn_y + btn_h + 14), palette.accent, center=True)
         _draw_text(surface, "\u952e\u76d8\u8f93\u5165\u5b57\u6bcd + \u9f20\u6807\u70b9\u51fb\u58f0\u8c03\u6309\u949f\u63d0\u4ea4  Esc \u8fd4\u56de", 14,
                    (W // 2, H - 16), palette.accent, center=True)
+        self._render_combo_banner(surface, runtime)
