@@ -36,6 +36,7 @@ from .logic import (
     RoundStats,
     build_match_pairs,
     build_mcq_question,
+    checkpoint_reward,
     compute_round_result,
     filter_entries,
     grades_for_years,
@@ -44,6 +45,7 @@ from .logic import (
     normalize_pinyin_input,
     score_hit,
     score_speed_bonus,
+    summarize_highlights,
 )
 
 
@@ -188,6 +190,12 @@ class HanziPinyinPathScene(Scene):
         self._combo_banner_text: str = ""
         self._combo_banner_timer: float = 0.0
 
+        # Checkpoint reward/highlight state
+        self._total_stars: int = 0
+        self._fastest_answer_ms: int | None = None
+        self._checkpoint_banner_text: str = ""
+        self._checkpoint_banner_timer: float = 0.0
+
     # ------------------------------------------------------------------
     # Scene lifecycle
     # ------------------------------------------------------------------
@@ -293,6 +301,45 @@ class HanziPinyinPathScene(Scene):
         size = 28 + int(6 * abs(math.sin(phase * math.pi * 2.2)) * progress)
         y = 108 - int(10 * phase)
         _draw_text(surface, self._combo_banner_text, size, (W // 2, y), palette.accent, bold=True, center=True)
+
+    def _record_answer_metrics(self, elapsed_ms: int) -> None:
+        if elapsed_ms <= 0:
+            return
+        if self._fastest_answer_ms is None or elapsed_ms < self._fastest_answer_ms:
+            self._fastest_answer_ms = elapsed_ms
+
+    def _maybe_award_checkpoint(self, round_index: int) -> None:
+        event = checkpoint_reward(round_index, self._stats.accuracy_percent, self._streak)
+        if not event.triggered:
+            return
+
+        self._total_stars += event.stars
+        badge_map = {
+            "perfect_runner": "完美冲刺",
+            "combo_spark": "连击火花",
+        }
+        badge_text = f"  徽章: {badge_map[event.badge]}" if event.badge in badge_map else ""
+        self._checkpoint_banner_text = f"里程碑达成 +{event.stars}★{badge_text}"
+        self._checkpoint_banner_timer = 1.0
+        self._play_sfx("combo")
+
+    def _tick_checkpoint_banner(self, dt: float) -> None:
+        if self._checkpoint_banner_timer > 0.0:
+            self._checkpoint_banner_timer = max(0.0, self._checkpoint_banner_timer - dt)
+
+    def _render_checkpoint_banner(self, surface: pygame.Surface, runtime: Runtime) -> None:
+        if self._checkpoint_banner_timer <= 0.0 or not self._checkpoint_banner_text:
+            return
+        config = runtime.config
+        palette = config.palette
+        W = config.window_width
+
+        duration = 1.0
+        progress = max(0.0, min(1.0, self._checkpoint_banner_timer / duration))
+        alpha_scale = max(0.35, progress)
+        y = 138 - int(12 * (1.0 - progress))
+        color = tuple(int(c * alpha_scale) for c in palette.success)
+        _draw_text(surface, self._checkpoint_banner_text, 22, (W // 2, y), color, bold=True, center=True)
 
     # ------------------------------------------------------------------
     # Event handling
@@ -513,6 +560,7 @@ class HanziPinyinPathScene(Scene):
 
     def update(self, dt: float, runtime: Runtime) -> SceneTransition | None:
         self._tick_combo_banner(dt)
+        self._tick_checkpoint_banner(dt)
         if self._state == "match":
             return self._update_match(dt)
 
@@ -537,8 +585,11 @@ class HanziPinyinPathScene(Scene):
             if self._time_left == 0.0:
                 # Time's up: count as wrong, advance
                 self._stats.record_wrong()
-                self._stats.record_time(int(self._time_limit * 1000))
+                elapsed_ms = int(self._time_limit * 1000)
+                self._stats.record_time(elapsed_ms)
+                self._record_answer_metrics(elapsed_ms)
                 self._round_index += 1
+                self._maybe_award_checkpoint(self._round_index)
                 self._feedback_correct = False
                 self._streak = 0
                 self._feedback_timer = _FEEDBACK_DURATION
@@ -733,7 +784,8 @@ class HanziPinyinPathScene(Scene):
 
             _draw_text(surface, msg, size, (x, y), color, bold=True, center=True)
 
-            self._render_combo_banner(surface, runtime)
+        self._render_combo_banner(surface, runtime)
+        self._render_checkpoint_banner(surface, runtime)
 
     # ------------------------------------------------------------------
     # Result screen
@@ -745,15 +797,17 @@ class HanziPinyinPathScene(Scene):
         W, H = config.window_width, config.window_height
 
         result = compute_round_result(self._stats, self._score)
+        highlights = summarize_highlights(self._stats, self._fastest_answer_ms, self._total_stars)
 
         _draw_text(surface, "汉字拼音小径", 36, (W // 2, 44), palette.accent, bold=True, center=True)
         _draw_text(surface, "本局结束！", 28, (W // 2, 90), palette.text, center=True)
 
-        card = pygame.Rect((W - 480) // 2, 120, 480, 326)
+        card = pygame.Rect((W - 480) // 2, 120, 480, 418)
         _draw_card(surface, card, palette.card, palette.card_border, radius=24)
 
         avg_ms = result.avg_answer_ms
         avg_display = f"{avg_ms / 1000:.1f} 秒" if avg_ms else "—"
+        fastest_display = f"{highlights.fastest_ms / 1000:.1f} 秒" if highlights.fastest_ms else "—"
         rows = [
             ("总分",       str(result.score)),
             ("答对",       f"{result.correct_count} 题"),
@@ -761,6 +815,8 @@ class HanziPinyinPathScene(Scene):
             ("正确率",     f"{result.accuracy_percent}%"),
             ("最高连击",   str(result.best_streak)),
             ("平均用时",   avg_display),
+            ("最快作答",   fastest_display),
+            ("里程碑星星", f"{highlights.total_stars} ★"),
         ]
         for i, (label, value) in enumerate(rows):
             row_y = card.top + 30 + i * 46
@@ -776,7 +832,7 @@ class HanziPinyinPathScene(Scene):
             btn_labels.append("练错题")
         btn_labels.append("返回菜单")
         total_btn_w = len(btn_labels) * (btn_w + btn_gap) - btn_gap
-        btn_y = card.bottom + 36
+        btn_y = card.bottom + 24
         self._result_buttons = []
         for i, lbl in enumerate(btn_labels):
             bx = (W - total_btn_w) // 2 + i * (btn_w + btn_gap)
@@ -806,6 +862,10 @@ class HanziPinyinPathScene(Scene):
         self._streak = 0
         self._stats = RoundStats()
         self._wrong_entries = []
+        self._total_stars = 0
+        self._fastest_answer_ms = None
+        self._checkpoint_banner_text = ""
+        self._checkpoint_banner_timer = 0.0
         mode = _MODE_OPTIONS[self._mode_index][2]
         if mode == "input":
             self._input_round_index = 0
@@ -828,6 +888,10 @@ class HanziPinyinPathScene(Scene):
         self._streak = 0
         self._stats = RoundStats()
         self._wrong_entries = []
+        self._total_stars = 0
+        self._fastest_answer_ms = None
+        self._checkpoint_banner_text = ""
+        self._checkpoint_banner_timer = 0.0
         mode = _MODE_OPTIONS[self._mode_index][2]
         if mode == "match":
             self._go("match")
@@ -874,6 +938,7 @@ class HanziPinyinPathScene(Scene):
             return
         elapsed_ms = int((time.monotonic() - self._q_start_time) * 1000)
         self._stats.record_time(elapsed_ms)
+        self._record_answer_metrics(elapsed_ms)
         self._round_index += 1
         if self._selected == q.answer_index:
             self._feedback_correct = True
@@ -891,6 +956,7 @@ class HanziPinyinPathScene(Scene):
                 self._wrong_entries.append(q.source_entry)
             self._play_sfx("wrong")
         self._feedback_timer = _FEEDBACK_DURATION
+        self._maybe_award_checkpoint(self._round_index)
 
     # ------------------------------------------------------------------
     # Match mode helpers
@@ -1037,6 +1103,8 @@ class HanziPinyinPathScene(Scene):
             self._wrong_entries.append(entry)
             self._play_sfx("wrong")
         self._input_feedback_timer = _FEEDBACK_DURATION
+        self._record_answer_metrics(elapsed_ms)
+        self._maybe_award_checkpoint(self._input_round_index)
 
     def _update_input(self, dt: float) -> SceneTransition | None:
         if self._input_feedback_timer > 0:
@@ -1052,8 +1120,11 @@ class HanziPinyinPathScene(Scene):
             self._time_left = max(0.0, self._time_left - dt)
             if self._time_left == 0.0:
                 self._stats.record_wrong()
-                self._stats.record_time(int(self._time_limit * 1000))
+                elapsed_ms = int(self._time_limit * 1000)
+                self._stats.record_time(elapsed_ms)
+                self._record_answer_metrics(elapsed_ms)
                 self._input_round_index += 1
+                self._maybe_award_checkpoint(self._input_round_index)
                 self._input_correct = False
                 self._input_submitted = True
                 self._streak = 0
@@ -1135,3 +1206,4 @@ class HanziPinyinPathScene(Scene):
         _draw_text(surface, "\u952e\u76d8\u8f93\u5165\u5b57\u6bcd + \u9f20\u6807\u70b9\u51fb\u58f0\u8c03\u6309\u949f\u63d0\u4ea4  Esc \u8fd4\u56de", 14,
                    (W // 2, H - 16), palette.accent, center=True)
         self._render_combo_banner(surface, runtime)
+        self._render_checkpoint_banner(surface, runtime)
