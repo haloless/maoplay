@@ -6,6 +6,7 @@ Covers:
 - Building MCQ questions (Mode 1 & 2) and match-pair sets (Mode 3).
 - Judging pinyin input answers (Mode 4).
 - Scoring and round-result computation.
+- Fun-feedback helpers (tiering, checkpoint rewards, highlights).
 """
 
 from __future__ import annotations
@@ -219,6 +220,26 @@ class RoundResult:
     accuracy_percent: float
     best_streak: int
     avg_answer_ms: float
+
+
+@dataclass(frozen=True)
+class RewardEvent:
+    """A lightweight reward event emitted at round checkpoints."""
+
+    round_index: int
+    stars: int
+    badge: str | None
+    triggered: bool
+
+
+@dataclass(frozen=True)
+class HighlightSummary:
+    """Result-page highlight metrics derived from round stats."""
+
+    fastest_ms: int | None
+    total_stars: int
+    best_streak: int
+    accuracy_percent: float
 
 
 # ---------------------------------------------------------------------------
@@ -525,6 +546,73 @@ QUESTION_TIME_LIMITS: dict[str, float] = {
     "medium": 12.0,
     "hard":    8.0,
 }
+
+_FAST_THRESHOLD_MS: dict[str, int] = {
+    "easy": 4500,
+    "medium": 3200,
+    "hard": 2200,
+}
+
+_CHECKPOINT_ROUNDS: tuple[int, ...] = (3, 6, 10)
+
+
+def decide_feedback_tier(
+    is_correct: bool,
+    streak: int,
+    elapsed_ms: int,
+    difficulty: str,
+) -> Literal["normal_correct", "fast_correct", "combo_correct", "wrong"]:
+    """Categorise answer feedback intensity for audiovisual effects.
+
+    * streak is interpreted as the current consecutive-correct streak after this
+      answer is counted.
+    """
+    if not is_correct:
+        return "wrong"
+
+    combo_threshold = 5 if difficulty == "hard" else 6
+    if streak >= combo_threshold:
+        return "combo_correct"
+
+    fast_threshold = _FAST_THRESHOLD_MS.get(difficulty, _FAST_THRESHOLD_MS["medium"])
+    if max(0, elapsed_ms) <= fast_threshold:
+        return "fast_correct"
+    return "normal_correct"
+
+
+def checkpoint_reward(round_index: int, accuracy_so_far: float, streak: int) -> RewardEvent:
+    """Return checkpoint reward details for round 3/6/10, otherwise no-op."""
+    if round_index not in _CHECKPOINT_ROUNDS:
+        return RewardEvent(round_index=round_index, stars=0, badge=None, triggered=False)
+
+    stars = 1
+    if accuracy_so_far >= 85.0:
+        stars += 1
+    if streak >= 5:
+        stars += 1
+
+    badge: str | None = None
+    if round_index == 10 and accuracy_so_far >= 95.0 and streak >= 8:
+        badge = "perfect_runner"
+    elif accuracy_so_far >= 90.0 and streak >= 5:
+        badge = "combo_spark"
+
+    return RewardEvent(round_index=round_index, stars=stars, badge=badge, triggered=True)
+
+
+def summarize_highlights(
+    stats: RoundStats,
+    fastest_ms: int | None,
+    total_stars: int,
+) -> HighlightSummary:
+    """Build a result-page highlight summary without mutating base stats."""
+    normalized_fastest = fastest_ms if (fastest_ms is not None and fastest_ms > 0) else None
+    return HighlightSummary(
+        fastest_ms=normalized_fastest,
+        total_stars=max(0, total_stars),
+        best_streak=stats.best_streak,
+        accuracy_percent=stats.accuracy_percent,
+    )
 
 
 def score_hit(streak: int, base: int = 10) -> int:

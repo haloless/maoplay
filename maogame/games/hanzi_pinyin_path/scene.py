@@ -14,6 +14,7 @@ Currently implements:
 
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
 from typing import Literal
@@ -611,7 +612,22 @@ class HanziPinyinPathScene(Scene):
         if self._feedback_timer > 0:
             msg = "✓ 正确！" if self._feedback_correct else f"✗ 正确答案: {q.choices[q.answer_index]}"
             color = palette.success if self._feedback_correct else palette.error
-            _draw_text(surface, msg, 26, (W // 2, H - 40), color, bold=True, center=True)
+            progress = max(0.0, min(1.0, self._feedback_timer / _FEEDBACK_DURATION))
+            phase = 1.0 - progress
+            x = W // 2
+            y = H - 40
+            size = 26
+
+            if self._feedback_correct:
+                # Gentle pop effect for correct answers.
+                pop = abs(math.sin(phase * math.pi * 2.6))
+                size = 26 + int(8 * pop * progress)
+            else:
+                # Short horizontal shake for wrong answers.
+                shake = math.sin(phase * math.pi * 12.0)
+                x += int(10 * shake * progress)
+
+            _draw_text(surface, msg, size, (x, y), color, bold=True, center=True)
 
     # ------------------------------------------------------------------
     # Result screen

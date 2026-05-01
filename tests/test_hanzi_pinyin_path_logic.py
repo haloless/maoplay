@@ -11,13 +11,16 @@ from maogame.games.hanzi_pinyin_path.logic import (
     _pick_distractors_pinyin,
     build_match_pairs,
     build_mcq_question,
+    checkpoint_reward,
     compute_round_result,
+    decide_feedback_tier,
     filter_entries,
     grades_for_years,
     judge_pinyin_answer,
     load_entries_from_markdown,
     normalize_pinyin_input,
     score_hit,
+    summarize_highlights,
 )
 
 _DATA_FILE = Path(__file__).parent.parent / "doc" / "chinese_character_elementary_school.md"
@@ -198,6 +201,50 @@ class TestScoring(unittest.TestCase):
         # Bonus capped at +20
         self.assertEqual(score_hit(10), 30)
         self.assertEqual(score_hit(100), 30)
+
+
+class TestFunFeedbackHelpers(unittest.TestCase):
+    def test_feedback_tier_wrong(self) -> None:
+        tier = decide_feedback_tier(False, streak=10, elapsed_ms=100, difficulty="hard")
+        self.assertEqual(tier, "wrong")
+
+    def test_feedback_tier_combo_priority_over_fast(self) -> None:
+        tier = decide_feedback_tier(True, streak=6, elapsed_ms=200, difficulty="medium")
+        self.assertEqual(tier, "combo_correct")
+
+    def test_feedback_tier_fast_correct(self) -> None:
+        tier = decide_feedback_tier(True, streak=2, elapsed_ms=1800, difficulty="hard")
+        self.assertEqual(tier, "fast_correct")
+
+    def test_feedback_tier_normal_correct(self) -> None:
+        tier = decide_feedback_tier(True, streak=1, elapsed_ms=8000, difficulty="easy")
+        self.assertEqual(tier, "normal_correct")
+
+    def test_checkpoint_reward_only_on_checkpoint_rounds(self) -> None:
+        event = checkpoint_reward(round_index=2, accuracy_so_far=100.0, streak=10)
+        self.assertFalse(event.triggered)
+        self.assertEqual(event.stars, 0)
+        self.assertIsNone(event.badge)
+
+    def test_checkpoint_reward_stars_and_badge(self) -> None:
+        event = checkpoint_reward(round_index=10, accuracy_so_far=96.0, streak=8)
+        self.assertTrue(event.triggered)
+        self.assertEqual(event.stars, 3)
+        self.assertEqual(event.badge, "perfect_runner")
+
+    def test_summarize_highlights_does_not_mutate_stats(self) -> None:
+        stats = RoundStats()
+        stats.record_correct()
+        stats.record_correct()
+        stats.record_wrong()
+        before = (stats.correct_count, stats.wrong_count, stats.best_streak)
+
+        summary = summarize_highlights(stats, fastest_ms=1450, total_stars=4)
+        self.assertEqual(summary.fastest_ms, 1450)
+        self.assertEqual(summary.total_stars, 4)
+        self.assertEqual(summary.best_streak, 2)
+        self.assertEqual(summary.accuracy_percent, stats.accuracy_percent)
+        self.assertEqual(before, (stats.correct_count, stats.wrong_count, stats.best_streak))
 
 
 class TestRoundStats(unittest.TestCase):
