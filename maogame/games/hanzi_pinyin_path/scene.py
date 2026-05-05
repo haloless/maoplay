@@ -164,6 +164,7 @@ class HanziPinyinPathScene(Scene):
         self._match_pairs: list[MatchPair] = []
         self._match_left_rects: list[pygame.Rect] = []
         self._match_right_rects: list[pygame.Rect] = []
+        self._match_right_order: list[int] = []  # display row -> pair index
         self._match_selected_left: int = -1   # index of highlighted left card (-1 = none)
         self._match_done: list[bool] = []     # which pairs are correctly matched
         self._match_wrong_pair: tuple[int, int] | None = None  # (left_idx, right_idx) for wrong flash
@@ -910,6 +911,12 @@ class HanziPinyinPathScene(Scene):
         pair_count = _MATCH_PAIR_COUNTS.get(difficulty, 6)
         self._match_pairs = build_match_pairs(self._rng, self._pool, pair_count, difficulty)
         self._match_done = [False] * len(self._match_pairs)
+        self._match_right_order = list(range(len(self._match_pairs)))
+        if len(self._match_right_order) > 1:
+            self._rng.shuffle(self._match_right_order)
+            # Avoid an unchanged order so matching is never trivial.
+            if all(i == idx for i, idx in enumerate(self._match_right_order)):
+                self._match_right_order = self._match_right_order[1:] + self._match_right_order[:1]
         self._match_selected_left = -1
         self._match_wrong_pair = None
         self._match_wrong_timer = 0.0
@@ -972,24 +979,30 @@ class HanziPinyinPathScene(Scene):
         # Click on a right (pinyin) card
         if self._match_selected_left >= 0:
             for j, rect in enumerate(self._match_right_rects):
-                if rect.collidepoint(pos) and not self._match_done[j]:
-                    left_idx = self._match_selected_left
-                    # Check correctness: pairs are ordered so index must match
-                    if left_idx == j:
-                        self._match_done[left_idx] = True
-                        self._stats.record_correct()
-                        self._score += score_hit(self._streak)
-                        self._streak += 1
-                        self._play_sfx("combo" if self._streak >= 5 else "correct")
-                        self._trigger_combo_banner(self._streak)
-                    else:
-                        self._match_wrong_pair = (left_idx, j)
-                        self._match_wrong_timer = 0.5
-                        self._stats.record_wrong()
-                        self._streak = 0
-                        self._play_sfx("wrong")
-                    self._match_selected_left = -1
-                    return
+                if not rect.collidepoint(pos):
+                    continue
+                if j >= len(self._match_right_order):
+                    continue
+                right_pair_idx = self._match_right_order[j]
+                if self._match_done[right_pair_idx]:
+                    continue
+                left_idx = self._match_selected_left
+                # Compare selected left pair index with shuffled right pair index.
+                if left_idx == right_pair_idx:
+                    self._match_done[left_idx] = True
+                    self._stats.record_correct()
+                    self._score += score_hit(self._streak)
+                    self._streak += 1
+                    self._play_sfx("combo" if self._streak >= 5 else "correct")
+                    self._trigger_combo_banner(self._streak)
+                else:
+                    self._match_wrong_pair = (left_idx, j)
+                    self._match_wrong_timer = 0.5
+                    self._stats.record_wrong()
+                    self._streak = 0
+                    self._play_sfx("wrong")
+                self._match_selected_left = -1
+                return
 
     def _update_match(self, dt: float) -> SceneTransition | None:
         if self._match_wrong_timer > 0:
@@ -1036,22 +1049,62 @@ class HanziPinyinPathScene(Scene):
             self._match_left_rects.append(l_rect)
             self._match_right_rects.append(r_rect)
 
+            right_pair_idx = self._match_right_order[i] if i < len(self._match_right_order) else i
+            right_pair = pairs[right_pair_idx]
+
             done = self._match_done[i]
             wrong_l = self._match_wrong_pair and self._match_wrong_pair[0] == i
+            done_r = self._match_done[right_pair_idx]
             wrong_r = self._match_wrong_pair and self._match_wrong_pair[1] == i
             selected = self._match_selected_left == i
 
             if done:
-                l_fill = r_fill = palette.success
+                l_fill = palette.success
             else:
                 l_fill = palette.card_selected if selected else palette.card
                 l_fill = palette.error if wrong_l else l_fill
+
+            if done_r:
+                r_fill = palette.success
+            else:
                 r_fill = palette.error if wrong_r else palette.card
 
             _draw_card(surface, l_rect, l_fill, palette.card_border)
             _draw_text(surface, pair.left, 28, l_rect.center, palette.text, bold=True, center=True)
             _draw_card(surface, r_rect, r_fill, palette.card_border)
-            _draw_text(surface, pair.right, 22, r_rect.center, palette.text, bold=True, center=True)
+            _draw_text(surface, right_pair.right, 22, r_rect.center, palette.text, bold=True, center=True)
+
+        # Draw connection lines between matched cards.
+        right_order = self._match_right_order if len(self._match_right_order) == n else list(range(n))
+        right_row_by_pair = {pair_idx: row for row, pair_idx in enumerate(right_order)}
+        for pair_idx in range(n):
+            if not self._match_done[pair_idx]:
+                continue
+            right_row = right_row_by_pair.get(pair_idx)
+            if right_row is None:
+                continue
+            if pair_idx >= len(self._match_left_rects) or right_row >= len(self._match_right_rects):
+                continue
+            start = (self._match_left_rects[pair_idx].right, self._match_left_rects[pair_idx].centery)
+            end = (self._match_right_rects[right_row].left, self._match_right_rects[right_row].centery)
+            pygame.draw.line(surface, palette.success, start, end, width=4)
+
+        # Preview line from selected left card to cursor.
+        if 0 <= self._match_selected_left < n and self._match_selected_left < len(self._match_left_rects):
+            if not self._match_done[self._match_selected_left]:
+                start = (
+                    self._match_left_rects[self._match_selected_left].right,
+                    self._match_left_rects[self._match_selected_left].centery,
+                )
+                pygame.draw.line(surface, palette.accent, start, pygame.mouse.get_pos(), width=3)
+
+        # Wrong attempt line (brief red flash).
+        if self._match_wrong_pair is not None:
+            wrong_left, wrong_right_row = self._match_wrong_pair
+            if 0 <= wrong_left < len(self._match_left_rects) and 0 <= wrong_right_row < len(self._match_right_rects):
+                start = (self._match_left_rects[wrong_left].right, self._match_left_rects[wrong_left].centery)
+                end = (self._match_right_rects[wrong_right_row].left, self._match_right_rects[wrong_right_row].centery)
+                pygame.draw.line(surface, palette.error, start, end, width=3)
 
         done_count = sum(self._match_done)
         _draw_text(surface, f"{done_count}/{n} 配对完成", 18, (W // 2, H - 30), palette.accent, center=True)
