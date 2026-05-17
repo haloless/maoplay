@@ -177,6 +177,14 @@ class TestJudgePinyin(unittest.TestCase):
         e = self._entry("小", "xiao", 3)
         self.assertTrue(judge_pinyin_answer(e, "  xiao  ", 3, strict_tone=True))
 
+    def test_umlaut_u_equivalent_to_v(self) -> None:
+        e = self._entry("绿", "lv", 4)
+        self.assertTrue(judge_pinyin_answer(e, "lü", 4, strict_tone=True))
+
+    def test_u_colon_equivalent_to_v(self) -> None:
+        e = self._entry("绿", "lv", 4)
+        self.assertTrue(judge_pinyin_answer(e, "lu:", 4, strict_tone=True))
+
 
 class TestNormalizePinyin(unittest.TestCase):
     def test_lowercase(self) -> None:
@@ -187,6 +195,12 @@ class TestNormalizePinyin(unittest.TestCase):
 
     def test_v_preserved(self) -> None:
         self.assertEqual(normalize_pinyin_input("lv"), "lv")
+
+    def test_umlaut_u_mapped_to_v(self) -> None:
+        self.assertEqual(normalize_pinyin_input("lü"), "lv")
+
+    def test_u_colon_mapped_to_v(self) -> None:
+        self.assertEqual(normalize_pinyin_input("lu:"), "lv")
 
 
 class TestScoring(unittest.TestCase):

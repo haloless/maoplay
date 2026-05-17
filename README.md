@@ -62,3 +62,10 @@ Run a single test:
 ```bash
 .venv/bin/python -m unittest tests.test_registry.RegistryTests.test_registered_games_have_expected_ids
 ```
+
+## Copilot agents
+
+- `Game Producer`: designs new educational game concepts and writes implementation-ready docs in `doc/`.
+- `Game Test Agent`: runs playtest-style checks (headless launch, tests, code review) and produces prioritized issue reports with suggested fixes.
+
+See `doc/game_test_agent_playbook.md` for recommended prompts and workflows.

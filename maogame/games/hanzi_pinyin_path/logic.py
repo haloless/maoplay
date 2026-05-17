@@ -511,8 +511,18 @@ def build_match_pairs(
 # ---------------------------------------------------------------------------
 
 def normalize_pinyin_input(raw_text: str) -> str:
-    """Normalize user-typed pinyin: lowercase, strip whitespace, 'v' stays as-is."""
-    return raw_text.strip().lower()
+    """Normalize user-typed pinyin for keyboard-friendly matching.
+
+    Accepted equivalent forms:
+    - "v" and "ü" are treated the same.
+    - "u:" (common IME fallback) is treated the same as "v".
+    """
+    normalized = raw_text.strip().lower()
+    # Normalize common input variants for umlaut-u.
+    normalized = normalized.replace("u:", "v")
+    normalized = normalized.replace("ü", "v")
+    normalized = normalized.replace("ü", "v")
+    return normalized
 
 
 def judge_pinyin_answer(

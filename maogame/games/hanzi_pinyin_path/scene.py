@@ -182,6 +182,10 @@ class HanziPinyinPathScene(Scene):
         self._input_strict_tone: bool = True
         self._tone_btn_rects: list[pygame.Rect] = []
 
+        # Result screen actions
+        self._result_buttons: list[tuple[str, pygame.Rect]] = []
+        self._result_selected: int = 0
+
         # Audio feedback state (safe fallback when mixer/audio device is unavailable)
         self._audio_attempted: bool = False
         self._audio_enabled: bool = False
@@ -472,15 +476,33 @@ class HanziPinyinPathScene(Scene):
                 self._try_submit_input()
         else:
             char = event.unicode.lower()
-            if char.isalpha() or char == "v":
+            if char.isalpha() or char in ("v", ":"):
                 self._input_text += char
         return None
 
     def _handle_result_event(
         self, event: pygame.event.Event, runtime: Runtime
     ) -> SceneTransition | None:
+        labels = self._result_button_labels()
+        if not labels:
+            return None
+
+        if event.key in (pygame.K_LEFT, pygame.K_UP):
+            self._result_selected = move_selection(self._result_selected, -1, len(labels))
+            return None
+        if event.key in (pygame.K_RIGHT, pygame.K_DOWN):
+            self._result_selected = move_selection(self._result_selected, 1, len(labels))
+            return None
+
         if is_confirm_key(event):
-            self._start_round()
+            label = labels[self._result_selected]
+            if label == "再来一局":
+                self._start_round()
+                return None
+            if label == "练错题":
+                self._start_wrong_round()
+                return None
+            return SceneTransition(next_scene=runtime.launcher_scene())
         return None
 
     # ------------------------------------------------------------------
@@ -544,8 +566,9 @@ class HanziPinyinPathScene(Scene):
                     return None
 
         if self._state == "result":
-            for label, rect in self._result_buttons:
+            for i, (label, rect) in enumerate(self._result_buttons):
                 if rect.collidepoint(pos):
+                    self._result_selected = i
                     if label == "再来一局":
                         self._start_round()
                     elif label == "练错题":
@@ -824,14 +847,12 @@ class HanziPinyinPathScene(Scene):
             _draw_text(surface, label, 20, (card.left + 60, row_y + 12), palette.text)
             _draw_text(surface, value, 22, (card.right - 60, row_y + 12), palette.accent, bold=True)
 
-        # Buttons: show "练错题" only when there are wrong answers
-        has_wrong = len(self._wrong_entries) >= 4
+        # Buttons: show "练错题" only when there are enough wrong answers.
+        btn_labels = self._result_button_labels()
+        if btn_labels:
+            self._result_selected = max(0, min(self._result_selected, len(btn_labels) - 1))
         btn_w, btn_h = 160, 52
         btn_gap = 16
-        btn_labels = ["再来一局"]
-        if has_wrong:
-            btn_labels.append("练错题")
-        btn_labels.append("返回菜单")
         total_btn_w = len(btn_labels) * (btn_w + btn_gap) - btn_gap
         btn_y = card.bottom + 24
         self._result_buttons = []
@@ -839,12 +860,13 @@ class HanziPinyinPathScene(Scene):
             bx = (W - total_btn_w) // 2 + i * (btn_w + btn_gap)
             btn_rect = pygame.Rect(bx, btn_y, btn_w, btn_h)
             self._result_buttons.append((lbl, btn_rect))
-            fill = palette.accent if i == 0 else palette.card
-            text_color = palette.card if i == 0 else palette.text
+            is_selected = i == self._result_selected
+            fill = palette.accent if is_selected else palette.card
+            text_color = palette.card if is_selected else palette.text
             _draw_card(surface, btn_rect, fill, palette.card_border, radius=16)
             _draw_text(surface, lbl, 20, btn_rect.center, text_color, bold=True, center=True)
 
-        _draw_text(surface, "Enter 再来一局  Esc 返回菜单", 16, (W // 2, btn_y + btn_h + 20), palette.accent, center=True)
+        _draw_text(surface, "←→ 选择  Enter 确认  Esc 返回菜单", 16, (W // 2, btn_y + btn_h + 20), palette.accent, center=True)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -852,6 +874,15 @@ class HanziPinyinPathScene(Scene):
 
     def _go(self, state: str) -> None:
         self._state = state
+        if state == "result":
+            self._result_selected = 0
+
+    def _result_button_labels(self) -> list[str]:
+        labels = ["再来一局"]
+        if len(self._wrong_entries) >= 4:
+            labels.append("练错题")
+        labels.append("返回菜单")
+        return labels
 
     def _start_wrong_round(self) -> None:
         """Start a replay round using only wrong-answered entries as the pool."""
